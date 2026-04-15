@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
-from app.core.auth import verify_token
-from app.database import get_db
+from app.core.dependencies import resolve_user_from_token
 from app.mcp.registry import registry
 from app.mcp.schemas import JsonRpcError, JsonRpcRequest, JsonRpcResponse
-from app.utils.object_id import str_to_objectid
 
 router = APIRouter(prefix="/mcp", tags=["MCP"])
 
@@ -28,24 +27,7 @@ async def _build_context(authorization: Optional[str]) -> dict[str, Any]:
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
 
-    payload = verify_token(token)
-    user_id = payload.get("id") or payload.get("_id") or payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-
-    try:
-        object_id = str_to_objectid(str(user_id))
-    except ValueError:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Invalid token subject")
-
-    db = get_db()
-    user = await db["users"].find_one({"_id": object_id, "isDeleted": {"$ne": True}})
-    if not user:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="User not found")
-
-    if user.get("status") == "blocked":
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Account is blocked")
-
+    user = await resolve_user_from_token(token)
     return {"user": user}
 
 
@@ -161,7 +143,11 @@ async def _handle_rpc_item(payload: dict[str, Any], context: dict[str, Any]) -> 
         except Exception as exc:
             return JsonRpcResponse(
                 id=request.id,
-                error=JsonRpcError(code=JSON_RPC_INTERNAL_ERROR, message="Tool execution failed", data={"detail": str(exc)}),
+                error=JsonRpcError(
+                    code=JSON_RPC_INTERNAL_ERROR,
+                    message="Tool execution failed",
+                    data={"detail": str(exc)},
+                ),
             )
 
         return JsonRpcResponse(
@@ -177,7 +163,10 @@ async def _handle_rpc_item(payload: dict[str, Any], context: dict[str, Any]) -> 
 
     return JsonRpcResponse(
         id=request.id,
-        error=JsonRpcError(code=JSON_RPC_METHOD_NOT_FOUND, message=f"Unsupported method: {request.method}"),
+        error=JsonRpcError(
+            code=JSON_RPC_METHOD_NOT_FOUND,
+            message=f"Unsupported method: {request.method}",
+        ),
     )
 
 
@@ -185,7 +174,5 @@ def _serialize_tool_result(result: Any) -> str:
     if isinstance(result, str):
         return result
     if isinstance(result, (dict, list, tuple)):
-        import json
-
         return json.dumps(result, default=str, ensure_ascii=False)
     return str(result)

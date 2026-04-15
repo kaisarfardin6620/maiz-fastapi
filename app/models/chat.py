@@ -3,9 +3,11 @@ from typing import Optional, List
 from datetime import datetime
 from enum import Enum
 
+
 class MessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
+
 
 class CardType(str, Enum):
     START_NAVIGATION = "start_navigation"
@@ -15,12 +17,14 @@ class CardType(str, Enum):
     RECHECK_REQUEST = "recheck_request"
     REQUEST_LOCATION = "request_location"
 
+
 class Maneuver(str, Enum):
     STRAIGHT = "straight"
     LEFT = "left"
     RIGHT = "right"
     U_TURN = "u_turn"
     ARRIVE = "arrive"
+
 
 class ActionCard(BaseModel):
     cardType: Optional[CardType] = None
@@ -30,11 +34,13 @@ class ActionCard(BaseModel):
     label: Optional[str] = None
     ctaLabel: Optional[str] = None
 
+
 class NavigationInstruction(BaseModel):
     instructionText: Optional[str] = None
     landmarkRef: Optional[str] = None
     maneuver: Optional[Maneuver] = None
     isCorrection: bool = False
+
 
 class MessageAttachment(BaseModel):
     assetId: Optional[str] = None
@@ -42,37 +48,11 @@ class MessageAttachment(BaseModel):
     url: Optional[str] = None
     purpose: Optional[str] = None
 
-class LocationPayload(BaseModel):
-    lat: float
-    lng: float
-
-class ChatMessageOut(BaseModel):
-    role: MessageRole
-    text: Optional[str] = None
-    attachments: List[MessageAttachment] = Field(default_factory=list)
-    actionCard: Optional[ActionCard] = None
-    navigationInstruction: Optional[NavigationInstruction] = None
-    voiceTranscript: Optional[str] = None
-    createdAt: datetime
-
-class WSIncoming(BaseModel):
-    text: Optional[str] = None
-    audio: Optional[str] = None
-    imageUrl: Optional[str] = None
-    location: Optional[LocationPayload] = None
-
-class WSOutgoing(BaseModel):
-    role: MessageRole = MessageRole.ASSISTANT
-    text: Optional[str] = None
-    actionCard: Optional[ActionCard] = None
-    navigationInstruction: Optional[NavigationInstruction] = None
-    isStreaming: bool = False
-    isDone: bool = False
 
 class ChatSessionOut(BaseModel):
     id: str
     title: str = "New Chat"
     status: str = "active"
     venueId: Optional[str] = None
-    messages: List[ChatMessageOut] = Field(default_factory=list)
+    messages: List[dict] = Field(default_factory=list)
     createdAt: Optional[datetime] = None

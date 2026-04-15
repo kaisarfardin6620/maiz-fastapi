@@ -1,36 +1,31 @@
 from datetime import datetime, timezone
 import re
+import json
+import hashlib
 from typing import Optional, Tuple, Any
 from bson import ObjectId
 from app.database import get_db
 from app.mcp.registry import registry
+from app.redis_client import redis_client
 from app.services.ai_service import chat_completion, transcribe_audio, analyze_image
+
+MCP_CONTEXT_CACHE_TTL = 60  # seconds
 
 
 def _now():
     return datetime.now(timezone.utc)
 
 
-GPS_KEYWORDS = {
-    "gps", "coordinate", "coordinates", "latitude", "longitude", "lat", "lng", "map", "pin"
-}
 LOCATION_KEYWORDS = {
-    "where", "location", "locate", "find", "route", "direction", "directions", "address", "near"
+    "where", "location", "locate", "find", "route", "direction", "directions",
+    "address", "near", "gps", "coordinate", "coordinates", "latitude", "longitude",
+    "lat", "lng", "map", "pin"
 }
-
-
-def _tokenize(text: str) -> set[str]:
-    return {tok for tok in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(tok) > 2}
-
-
-def _mentions_gps(text: str) -> bool:
-    lower = (text or "").lower()
-    return any(k in lower for k in GPS_KEYWORDS)
 
 
 def _looks_like_location_query(text: str) -> bool:
     lower = (text or "").lower()
-    return any(k in lower for k in GPS_KEYWORDS.union(LOCATION_KEYWORDS))
+    return any(k in lower for k in LOCATION_KEYWORDS)
 
 
 def _safe_object_id(value: str | None):
@@ -58,62 +53,20 @@ def _generate_title_from_input(user_text: str, input_type: str = "text") -> str:
     return text
 
 
-async def _build_gps_runtime_context(user_text: str, venue_id: str | None) -> str | None:
-    if not _mentions_gps(user_text):
-        return None
-
-    text_tokens = _tokenize(user_text)
-    if not text_tokens:
-        return None
-
-    regex_pattern = "|".join(re.escape(t) for t in text_tokens)
-
-    db = get_db()
-    query = {
-        "isDeleted": {"$ne": True},
-        "googleMaps.lat": {"$exists": True, "$ne": None},
-        "googleMaps.lng": {"$exists": True, "$ne": None},
-        "$or":[
-            {"label": {"$regex": regex_pattern, "$options": "i"}},
-            {"address": {"$regex": regex_pattern, "$options": "i"}},
-        ]
-    }
-
-    venue_obj_id = _safe_object_id(venue_id)
-    if venue_obj_id:
-        query["venue"] = venue_obj_id
-
-    top_candidates = await db["locations"].find(
-        query,
-        {"label": 1, "address": 1, "googleMaps": 1},
-    ).limit(5).to_list(length=5)
-
-    if not top_candidates:
-        return None
-
-    lines =[]
-    for doc in top_candidates:
-        gm = doc.get("googleMaps") or {}
-        lat = gm.get("lat")
-        lng = gm.get("lng")
-        if lat is None or lng is None:
-            continue
-        label = doc.get("label") or doc.get("address") or "Unknown place"
-        lines.append(f"- {label}: lat={lat}, lng={lng}")
-
-    if not lines:
-        return None
-
-    return (
-        "GPS context from saved locations in database:\n"
-        + "\n".join(lines)
-        + "\nIf the user asks for GPS, provide the most relevant coordinates from this list."
-    )
-
-
 async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> Tuple[str | None, dict | None]:
     if not _looks_like_location_query(user_text):
         return None, None
+
+    query_hash = hashlib.md5(user_text.strip().lower().encode()).hexdigest()
+    cache_key = f"mcp_loc:{user_id}:{query_hash}"
+
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            payload = json.loads(cached)
+            return payload.get("context"), payload.get("action_card")
+    except Exception:
+        pass
 
     try:
         handler = registry.get_handler("route_to_location")
@@ -148,7 +101,12 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> T
     if lat is None or lng is None:
         return None, None
 
-    label = destination.get("label") or destination.get("formattedAddress") or destination.get("address") or user_text
+    label = (
+        destination.get("label")
+        or destination.get("formattedAddress")
+        or destination.get("address")
+        or user_text
+    )
     dest_id = destination.get("_id") or destination.get("id")
 
     if route_mode == "indoor" and dest_id:
@@ -173,7 +131,7 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> T
             "ctaLabel": "Open in Maps" if maps_url else "View Location",
         }
 
-    context_lines =[
+    context_lines = [
         "Location resolved successfully via MCP tool route_to_location:",
         f"- label: {label}",
         f"- resolutionLevel: {resolution_level}",
@@ -196,8 +154,19 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> T
             "IMPORTANT: The system has automatically generated a UI action card for this location. "
             "Do not output raw JSON or coordinates. Keep your response brief and user-friendly."
         )
-    
-    return "\n".join(context_lines), action_card
+
+    context_str = "\n".join(context_lines)
+
+    try:
+        await redis_client.setex(
+            cache_key,
+            MCP_CONTEXT_CACHE_TTL,
+            json.dumps({"context": context_str, "action_card": action_card}),
+        )
+    except Exception:
+        pass
+
+    return context_str, action_card
 
 
 async def create_session(user_id: str, venue_id: str = None, title: str = "New Chat") -> dict:
@@ -206,7 +175,7 @@ async def create_session(user_id: str, venue_id: str = None, title: str = "New C
         "user": ObjectId(user_id),
         "venue": ObjectId(venue_id) if venue_id else None,
         "title": title or "New Chat",
-        "messages":[],
+        "messages": [],
         "status": "active",
         "isDeleted": False,
         "createdAt": _now(),
@@ -227,33 +196,11 @@ async def get_session_by_id(user_id: str, conversation_id: str) -> Optional[dict
     })
 
 
-async def get_or_create_session(
-    user_id: str,
-    venue_id: str = None,
-    conversation_id: str = None,
-    force_new: bool = False,
-) -> dict:
-    if force_new:
-        return await create_session(user_id, venue_id)
-
-    if conversation_id:
-        existing = await get_session_by_id(user_id, conversation_id)
-        if existing:
-            return existing
-
+async def list_sessions(
+    user_id: str, venue_id: str = None, limit: int = 50, filter: str = None
+) -> list[dict]:
     db = get_db()
-    session = await db["chatsessions"].find_one(
-        {"user": ObjectId(user_id), "status": "active", "isDeleted": {"$ne": True}},
-        sort=[("createdAt", -1)],
-    )
-    if not session:
-        session = await create_session(user_id, venue_id)
-    return session
-
-
-async def list_sessions(user_id: str, venue_id: str = None, limit: int = 50, filter: str = None) -> list[dict]:
-    db = get_db()
-    query = {
+    query: dict = {
         "user": ObjectId(user_id),
         "isDeleted": {"$ne": True},
     }
@@ -278,7 +225,13 @@ async def list_sessions(user_id: str, venue_id: str = None, limit: int = 50, fil
             month_start = now - timedelta(days=30)
             query["updatedAt"] = {"$lt": week_start, "$gte": month_start}
 
-    docs = await db["chatsessions"].find(query).sort("updatedAt", -1).limit(max(1, min(limit, 200))).to_list(length=limit)
+    docs = (
+        await db["chatsessions"]
+        .find(query)
+        .sort("updatedAt", -1)
+        .limit(max(1, min(limit, 200)))
+        .to_list(length=limit)
+    )
     return docs
 
 
@@ -336,20 +289,25 @@ async def delete_session(user_id: str, conversation_id: str) -> bool:
 
 
 async def get_session_messages(session: dict) -> list:
-    formatted =[]
+    formatted = []
     for msg in session.get("messages", [])[-50:]:
         formatted.append({"role": msg["role"], "content": msg.get("text", "")})
     return formatted
 
 
-async def save_message(session_id: ObjectId, role: str, text: str,
-                       voice_transcript: str = None, attachments: list = None,
-                       action_card: dict = None):
+async def save_message(
+    session_id: ObjectId,
+    role: str,
+    text: str,
+    voice_transcript: str = None,
+    attachments: list = None,
+    action_card: dict = None,
+):
     db = get_db()
     message = {
         "role": role,
         "text": text,
-        "attachments": attachments or[],
+        "attachments": attachments or [],
         "actionCard": action_card,
         "voiceTranscript": voice_transcript,
         "createdAt": _now(),
@@ -361,10 +319,9 @@ async def save_message(session_id: ObjectId, role: str, text: str,
     return message
 
 
-
-
-async def process_text_message(session: dict, text: str, user_id: str,
-                                venue_id: str = None) -> Tuple[Any, dict | None]:
+async def process_text_message(
+    session: dict, text: str, user_id: str, venue_id: str = None
+) -> Tuple[Any, dict | None]:
     db = get_db()
     user = await db["users"].find_one(
         {"_id": ObjectId(user_id), "isDeleted": {"$ne": True}},
@@ -374,19 +331,14 @@ async def process_text_message(session: dict, text: str, user_id: str,
     history = await get_session_messages(session)
     history.append({"role": "user", "content": text})
 
-    context_parts =[]
     action_card = None
-    
+    runtime_context = None
+
     mcp_context, mcp_action_card = await _build_mcp_location_runtime_context(text, user_id)
     if mcp_context:
-        context_parts.append(mcp_context)
+        runtime_context = mcp_context
         action_card = mcp_action_card
 
-    db_context = await _build_gps_runtime_context(text, venue_id)
-    if db_context:
-        context_parts.append(db_context)
-
-    runtime_context = "\n\n".join(context_parts) if context_parts else None
     stream = await chat_completion(
         history,
         stream=True,

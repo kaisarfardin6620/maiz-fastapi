@@ -9,10 +9,7 @@ from app.database import get_db
 bearer_scheme = HTTPBearer()
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-):
-    token = credentials.credentials
+async def resolve_user_from_token(token: str) -> dict:
     payload = verify_token(token)
 
     user_id = payload.get("id") or payload.get("_id") or payload.get("sub")
@@ -20,7 +17,7 @@ async def get_current_user(
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
     try:
-        object_id = ObjectId(user_id)
+        object_id = ObjectId(str(user_id))
     except Exception:
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Invalid token subject")
 
@@ -34,3 +31,9 @@ async def get_current_user(
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Account is blocked")
 
     return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    return await resolve_user_from_token(credentials.credentials)

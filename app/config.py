@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
 
     APP_ENV: str = "development"
-    DEBUG: bool = True
+    DEBUG: bool = False
     CORS_ALLOW_ORIGINS: List[str] =[]
 
     OPENAI_API_KEY: str

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
 from starlette.status import HTTP_401_UNAUTHORIZED
@@ -151,8 +151,30 @@ async def _get_navigation_session(arguments: dict, context: dict) -> dict:
 
 async def _recheck_navigation(arguments: dict, context: dict) -> dict:
     user = await _require_user(context)
-    analysis = await analyze_image(arguments["imageUrl"], context=arguments.get("context", "recheck photo"))
-    correction = await handle_recheck(arguments["navigationId"], analysis, user_id=str(user["_id"]))
+    nav_id = arguments["navigationId"]
+    image_context = arguments.get("context", "")
+
+    try:
+        navigation_id = str_to_objectid(nav_id)
+        db = get_db()
+        session = await db["navigationsessions"].find_one(
+            {"_id": navigation_id, "isDeleted": {"$ne": True}}
+        )
+        if session:
+            steps = session.get("steps", [])
+            current_index = session.get("currentStepIndex", 0)
+            current_step = steps[current_index] if steps and current_index < len(steps) else {}
+            step_instruction = current_step.get("instructionText", "")
+            if step_instruction:
+                image_context = f"Current navigation step: {step_instruction}. {image_context}".strip()
+    except Exception:
+        pass
+
+    if not image_context:
+        image_context = "recheck photo"
+
+    analysis = await analyze_image(arguments["imageUrl"], context=image_context)
+    correction = await handle_recheck(nav_id, analysis, user_id=str(user["_id"]))
     return {"analysis": analysis, "correction": correction}
 
 
@@ -165,7 +187,9 @@ async def _route_to_location(arguments: dict, context: dict) -> dict:
     origin_lat = None
     origin_lng = None
     if origin_id:
-        origin = await db["locations"].find_one({"_id": str_to_objectid(origin_id), "isDeleted": {"$ne": True}})
+        origin = await db["locations"].find_one(
+            {"_id": str_to_objectid(origin_id), "isDeleted": {"$ne": True}}
+        )
         if not origin:
             raise HTTPException(status_code=404, detail="Origin location not found")
 
