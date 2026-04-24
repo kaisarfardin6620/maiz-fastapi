@@ -1,4 +1,4 @@
-from jose import JWTError, jwt
+from jose import JWTError, ExpiredSignatureError, jwt
 from fastapi import HTTPException
 from starlette.status import HTTP_401_UNAUTHORIZED
 from app.config import settings
@@ -12,6 +12,11 @@ def verify_token(token: str) -> dict:
             algorithms=[settings.JWT_ALGORITHM],
         )
         return payload
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+        )
     except JWTError:
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,

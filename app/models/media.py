@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -24,11 +24,11 @@ class DetectedLandmark(BaseModel):
 class AIAnalysis(BaseModel):
     detectedVenueType: Optional[str] = None
     detectedZone: Optional[str] = None
-    detectedLandmarks: List[DetectedLandmark] = []
+    detectedLandmarks: List[DetectedLandmark] = Field(default_factory=list)
     detectedText: Optional[str] = None
     detectedLocation: Optional[str] = None
     overallConfidence: Optional[float] = None
-    tags: List[str] = []
+    tags: List[str] = Field(default_factory=list)
     analysedAt: Optional[datetime] = None
 
 class MediaAssetOut(BaseModel):

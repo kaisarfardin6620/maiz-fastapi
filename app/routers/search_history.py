@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from bson import ObjectId
 from app.core.dependencies import get_current_user
 from app.database import get_db
-from app.utils.object_id import docs_to_list
+from app.utils.object_id import docs_to_list, str_to_objectid
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/history", tags=["Search History"])
@@ -51,9 +51,16 @@ async def get_search_history(user=Depends(get_current_user)):
 
 @router.delete("/{history_id}")
 async def delete_history_item(history_id: str, user=Depends(get_current_user)):
+    from fastapi import HTTPException
+
     db = get_db()
+    try:
+        history_obj_id = str_to_objectid(history_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     await db["searchhistories"].update_one(
-        {"_id": ObjectId(history_id), "user": ObjectId(user["_id"])},
+        {"_id": history_obj_id, "user": ObjectId(user["_id"])} ,
         {"$set": {"isDeleted": True}},
     )
     return success_response(message="Deleted")

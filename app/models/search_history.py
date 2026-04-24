@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -21,6 +21,6 @@ class SearchHistoryItem(BaseModel):
 
 
 class SearchHistoryGrouped(BaseModel):
-    today: List[SearchHistoryItem] = []
-    lastWeek: List[SearchHistoryItem] = []
-    lastMonth: List[SearchHistoryItem] = []
+    today: List[SearchHistoryItem] = Field(default_factory=list)
+    lastWeek: List[SearchHistoryItem] = Field(default_factory=list)
+    lastMonth: List[SearchHistoryItem] = Field(default_factory=list)

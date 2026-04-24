@@ -1,9 +1,10 @@
-import base64
-import httpx
 from openai import AsyncOpenAI
 from app.config import settings
 
-client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+client = AsyncOpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    timeout=settings.OPENAI_TIMEOUT_SECONDS,
+)
 
 SYSTEM_PROMPT = """
 You are Maiz, an indoor navigation AI assistant.
@@ -17,7 +18,7 @@ Always reference visual landmarks (signs, pillars, escalators) in your direction
 
 async def chat_completion(messages: list, stream: bool = True):
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=settings.OPENAI_CHAT_MODEL,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
         stream=stream,
         max_tokens=500,
@@ -31,7 +32,7 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = filename
     transcript = await client.audio.transcriptions.create(
-        model="whisper-1",
+        model=settings.OPENAI_TRANSCRIBE_MODEL,
         file=audio_file,
     )
     return transcript.text
@@ -60,7 +61,7 @@ Respond in JSON format only:
 }}
 """
     response = await client.chat.completions.create(
-        model="gpt-4o",
+        model=settings.OPENAI_VISION_MODEL,
         messages=[
             {
                 "role": "user",

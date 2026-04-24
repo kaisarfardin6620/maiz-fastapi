@@ -19,8 +19,13 @@ async def get_current_user(
     if not user_id:
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
+    try:
+        object_id = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Invalid token subject")
+
     db = get_db()
-    user = await db["users"].find_one({"_id": ObjectId(user_id), "isDeleted": {"$ne": True}})
+    user = await db["users"].find_one({"_id": object_id, "isDeleted": {"$ne": True}})
 
     if not user:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="User not found")

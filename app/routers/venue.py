@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from app.core.dependencies import get_current_user
 from app.database import get_db
-from app.utils.object_id import doc_to_dict, docs_to_list
+from app.utils.object_id import doc_to_dict, docs_to_list, str_to_objectid
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/venue", tags=["Venue"])
@@ -34,12 +34,17 @@ async def search_venues(
 @router.get("/{venue_id}")
 async def get_venue(venue_id: str, user=Depends(get_current_user)):
     db = get_db()
-    from bson import ObjectId
+    from fastapi import HTTPException
+
+    try:
+        venue_obj_id = str_to_objectid(venue_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     venue = await db["venues"].find_one(
-        {"_id": ObjectId(venue_id), "isDeleted": {"$ne": True}}
+        {"_id": venue_obj_id, "isDeleted": {"$ne": True}}
     )
     if not venue:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Venue not found")
     return success_response(doc_to_dict(venue))
 
@@ -48,8 +53,14 @@ async def get_venue(venue_id: str, user=Depends(get_current_user)):
 async def get_venue_zones(venue_id: str, floor: int = Query(None),
                            user=Depends(get_current_user)):
     db = get_db()
-    from bson import ObjectId
-    query = {"venue": ObjectId(venue_id), "isDeleted": {"$ne": True}}
+    from fastapi import HTTPException
+
+    try:
+        venue_obj_id = str_to_objectid(venue_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    query = {"venue": venue_obj_id, "isDeleted": {"$ne": True}}
     if floor is not None:
         query["floor"] = floor
     cursor = db["venuezones"].find(query)

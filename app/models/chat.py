@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -45,7 +45,7 @@ class ChatMessageOut(BaseModel):
     id: str
     role: MessageRole
     text: Optional[str] = None
-    attachments: List[MessageAttachment] = []
+    attachments: List[MessageAttachment] = Field(default_factory=list)
     actionCard: Optional[ActionCard] = None
     navigationInstruction: Optional[NavigationInstruction] = None
     voiceTranscript: Optional[str] = None
@@ -70,5 +70,5 @@ class ChatSessionOut(BaseModel):
     title: str = "New Chat"
     status: str = "active"
     venueId: Optional[str] = None
-    messages: List[ChatMessageOut] = []
+    messages: List[ChatMessageOut] = Field(default_factory=list)
     createdAt: Optional[datetime] = None

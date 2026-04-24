@@ -11,4 +11,3 @@ httpx==0.27.2
 openai==1.45.0
 Pillow==10.4.0
 python-dateutil==2.9.0
-bson==0.5.10

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -57,7 +57,7 @@ class NavigationSessionOut(BaseModel):
     destinationId: str
     destinationLabel: Optional[str] = None
     status: NavStatus = NavStatus.PENDING
-    steps: List[RouteStepOut] = []
+    steps: List[RouteStepOut] = Field(default_factory=list)
     currentStepIndex: int = 0
     totalSteps: int = 0
     indoorContext: Optional[IndoorContext] = None
