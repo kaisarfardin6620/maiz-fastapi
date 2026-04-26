@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import re
-from typing import Optional
+from typing import Optional, Tuple, Any
 from bson import ObjectId
 from app.database import get_db
 from app.mcp.registry import registry
@@ -111,14 +111,14 @@ async def _build_gps_runtime_context(user_text: str, venue_id: str | None) -> st
     )
 
 
-async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> str | None:
+async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> Tuple[str | None, dict | None]:
     if not _looks_like_location_query(user_text):
-        return None
+        return None, None
 
     try:
         handler = registry.get_handler("route_to_location")
     except Exception:
-        return None
+        return None, None
 
     try:
         result = await handler(
@@ -126,7 +126,7 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> s
             {"user": {"_id": ObjectId(user_id)}},
         )
     except Exception:
-        return None
+        return None, None
 
     destination = result.get("destination") or {}
     coordinates = result.get("coordinates") or {}
@@ -143,12 +143,20 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> s
         lng = gm.get("lng")
 
     if lat is None or lng is None:
-        return None
+        return None, None
 
     label = destination.get("label") or destination.get("formattedAddress") or destination.get("address") or user_text
+    dest_id = destination.get("_id") or destination.get("id")
+
+    action_card = {
+        "cardType": "start_navigation" if route else "location_info",
+        "locationId": str(dest_id) if dest_id else None,
+        "label": label,
+        "ctaLabel": "Get Directions" if route else "Live Location"
+    }
 
     context_lines =[
-        "Location resolved via MCP tool route_to_location:",
+        "Location resolved successfully via MCP tool route_to_location:",
         f"- label: {label}",
         f"- latitude: {lat}",
         f"- longitude: {lng}",
@@ -156,8 +164,13 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> s
     if maps_url:
         context_lines.append(f"- mapsUrl: {maps_url}")
 
-    context_lines.append("If user asks for GPS/location, provide these coordinates explicitly.")
-    return "\n".join(context_lines)
+    context_lines.append(
+        "IMPORTANT: The system has automatically generated a UI 'Action Card' with a button for this location. "
+        "Do not output raw JSON or coordinates. Just provide a brief, friendly conversational response "
+        "confirming you found the location."
+    )
+    
+    return "\n".join(context_lines), action_card
 
 
 async def create_session(user_id: str, venue_id: str = None, title: str = "New Chat") -> dict:
@@ -280,20 +293,22 @@ async def delete_session(user_id: str, conversation_id: str) -> bool:
 
 
 async def get_session_messages(session: dict) -> list:
-    formatted = []
+    formatted =[]
     for msg in session.get("messages", [])[-20:]:
         formatted.append({"role": msg["role"], "content": msg.get("text", "")})
     return formatted
 
 
 async def save_message(session_id: ObjectId, role: str, text: str,
-                       voice_transcript: str = None, attachments: list = None):
+                       voice_transcript: str = None, attachments: list = None,
+                       action_card: dict = None):
     db = get_db()
     message = {
         "_id": ObjectId(),
         "role": role,
         "text": text,
         "attachments": attachments or[],
+        "actionCard": action_card,
         "voiceTranscript": voice_transcript,
         "createdAt": _now(),
     }
@@ -319,7 +334,7 @@ async def save_search_history(user_id: str, query: str, input_type: str,
 
 
 async def process_text_message(session: dict, text: str, user_id: str,
-                                venue_id: str = None) -> tuple[str, any]:
+                                venue_id: str = None) -> Tuple[Any, dict | None]:
     db = get_db()
     user = await db["users"].find_one(
         {"_id": ObjectId(user_id), "isDeleted": {"$ne": True}},
@@ -330,9 +345,12 @@ async def process_text_message(session: dict, text: str, user_id: str,
     history.append({"role": "user", "content": text})
 
     context_parts =[]
-    mcp_context = await _build_mcp_location_runtime_context(text, user_id)
+    action_card = None
+    
+    mcp_context, mcp_action_card = await _build_mcp_location_runtime_context(text, user_id)
     if mcp_context:
         context_parts.append(mcp_context)
+        action_card = mcp_action_card
 
     db_context = await _build_gps_runtime_context(text, venue_id)
     if db_context:
@@ -345,7 +363,7 @@ async def process_text_message(session: dict, text: str, user_id: str,
         user_context=user,
         runtime_context=runtime_context,
     )
-    return stream
+    return stream, action_card
 
 
 async def process_voice_message(audio_bytes: bytes) -> str:

@@ -1,6 +1,10 @@
 import uuid
 import base64
+import os
+import tempfile
+import cv2
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from datetime import datetime, timezone
 from bson import ObjectId
 from app.core.dependencies import get_current_user
@@ -10,6 +14,34 @@ from app.utils.response import success_response, APIResponse
 from app.models.media import MediaUploadResponse
 
 router = APIRouter(prefix="/media", tags=["Media"])
+
+
+def _extract_frame_sync(file_bytes: bytes, ext: str) -> str | None:
+    """
+    Synchronous CPU-bound function to extract a frame.
+    Runs in a separate thread so it doesn't freeze the FastAPI async event loop.
+    """
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        
+        cap = cv2.VideoCapture(tmp_path)
+        success, frame = cap.read()
+        cap.release()
+        
+        if success:
+            _, buffer = cv2.imencode('.jpg', frame)
+            return base64.b64encode(buffer.tobytes()).decode('utf-8')
+            
+    except Exception:
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            
+    return None
 
 
 @router.post("/upload", response_model=APIResponse[MediaUploadResponse])
@@ -28,26 +60,38 @@ async def upload_media(
 
     if "image" in content_type:
         media_type = "image"
-    elif "audio" in content_type:
-        media_type = "audio"
     elif "video" in content_type:
         media_type = "video"
+    elif "audio" in content_type:
+        media_type = "audio"
     else:
         raise HTTPException(status_code=400, detail="Unsupported file type")
 
     file_url = f"https://your-storage.com/{user_id}/{safe_filename}"
+    file_bytes = await file.read()
 
     ai_analysis = None
+
     if media_type == "image":
         try:
-            file_bytes = await file.read()
             b64_data = base64.b64encode(file_bytes).decode('utf-8')
             base64_url = f"data:{content_type};base64,{b64_data}"
             
             ai_analysis = await analyze_image(base64_url, context=purpose)
             ai_analysis["analysedAt"] = datetime.now(timezone.utc)
-        except Exception as e:
+        except Exception:
             ai_analysis = None
+
+    elif media_type == "video":
+        b64_data = await run_in_threadpool(_extract_frame_sync, file_bytes, ext)
+        
+        if b64_data:
+            try:
+                base64_url = f"data:image/jpeg;base64,{b64_data}"
+                ai_analysis = await analyze_image(base64_url, context=purpose)
+                ai_analysis["analysedAt"] = datetime.now(timezone.utc)
+            except Exception:
+                ai_analysis = None
 
     result = await db["mediaassets"].insert_one({
         "user": ObjectId(user_id),

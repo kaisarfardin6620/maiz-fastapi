@@ -185,8 +185,15 @@ async def chat_websocket(
 
                 await save_search_history(user_id, user_text, input_type, venue_id)
 
-                stream = await process_text_message(session, user_text, user_id, venue_id)
+                stream, action_card = await process_text_message(session, user_text, user_id, venue_id)
                 full_reply = ""
+
+                if action_card:
+                    await websocket.send_text(json.dumps({
+                        "type": "action_card",
+                        "conversationId": session_id_str,
+                        "actionCard": action_card,
+                    }))
 
                 async for chunk in stream:
                     delta = chunk.choices[0].delta.content or ""
@@ -206,7 +213,7 @@ async def chat_websocket(
                     "isDone": True,
                 }))
 
-                await save_message(session_id, "assistant", full_reply)
+                await save_message(session_id, "assistant", full_reply, action_card=action_card)
 
                 latest = await get_session_by_id(user_id, session_id_str)
                 if latest:
