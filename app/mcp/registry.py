@@ -10,7 +10,7 @@ from app.mcp.schemas import ToolDefinition, ToolSchema
 from app.services.ai_service import analyze_image
 from app.services.navigation_service import advance_step, handle_recheck, start_navigation
 from app.utils.object_id import doc_to_dict, docs_to_list, str_to_objectid
-from app.services.maps_service import geocode_address, get_google_directions
+from app.services.maps_service import get_google_directions, resolve_destination
 
 
 McpHandler = Callable[[dict, dict], Awaitable[dict]]
@@ -128,8 +128,8 @@ async def _start_navigation(arguments: dict, context: dict) -> dict:
 
 
 async def _advance_navigation_step(arguments: dict, context: dict) -> dict:
-    await _require_user(context)
-    session = await advance_step(arguments["navigationId"])
+    user = await _require_user(context)
+    session = await advance_step(arguments["navigationId"], user_id=str(user["_id"]))
     if not session:
         raise HTTPException(status_code=404, detail="Navigation session not found")
     return {"session": doc_to_dict(session)}
@@ -150,9 +150,9 @@ async def _get_navigation_session(arguments: dict, context: dict) -> dict:
 
 
 async def _recheck_navigation(arguments: dict, context: dict) -> dict:
-    await _require_user(context)
+    user = await _require_user(context)
     analysis = await analyze_image(arguments["imageUrl"], context=arguments.get("context", "recheck photo"))
-    correction = await handle_recheck(arguments["navigationId"], analysis)
+    correction = await handle_recheck(arguments["navigationId"], analysis, user_id=str(user["_id"]))
     return {"analysis": analysis, "correction": correction}
 
 
@@ -173,52 +173,51 @@ async def _route_to_location(arguments: dict, context: dict) -> dict:
         origin_lat = origin_maps.get("lat")
         origin_lng = origin_maps.get("lng")
 
-    exact_location = await db["locations"].find_one(
-        {
-            "isDeleted": {"$ne": True},
-            "$or": [
-                {"label": {"$regex": f"^{query}$", "$options": "i"}},
-                {"address": {"$regex": query, "$options": "i"}},
-            ],
-        }
-    )
-
-    if exact_location:
-        dest_maps = (exact_location or {}).get("googleMaps") or {}
-        dest_lat = dest_maps.get("lat")
-        dest_lng = dest_maps.get("lng")
-        route = None
-        if all(v is not None for v in [origin_lat, origin_lng, dest_lat, dest_lng]):
-            route = await get_google_directions(origin_lat, origin_lng, dest_lat, dest_lng, mode="walking")
-
-        return {
-            "matchType": "location",
-            "destination": doc_to_dict(exact_location),
-            "coordinates": {"lat": dest_lat, "lng": dest_lng} if dest_lat is not None and dest_lng is not None else None,
-            "route": route,
-            "mapsUrl": route["googleMapsRoute"]["mapsUrl"] if route else None,
-        }
-
-    geocoded = await geocode_address(query)
-    if not geocoded:
+    resolved = await resolve_destination(query)
+    if not resolved:
         raise HTTPException(status_code=404, detail="Unable to resolve destination")
 
+    destination = resolved.get("destination") or {}
+    coordinates = resolved.get("coordinates") or {}
+    dest_lat = coordinates.get("lat")
+    dest_lng = coordinates.get("lng")
+
     route = None
-    if all(v is not None for v in [origin_lat, origin_lng, geocoded.get("lat"), geocoded.get("lng")]):
+    route_mode = "fallback"
+    reason = resolved.get("reason")
+    if all(v is not None for v in [origin_lat, origin_lng, dest_lat, dest_lng]):
         route = await get_google_directions(
             origin_lat=origin_lat,
             origin_lng=origin_lng,
-            destination_lat=geocoded["lat"],
-            destination_lng=geocoded["lng"],
+            destination_lat=dest_lat,
+            destination_lng=dest_lng,
             mode="walking",
         )
+        if route:
+            route_mode = "outdoor"
+            reason = None
+
+    maps_url = None
+    if route:
+        maps_url = ((route or {}).get("googleMapsRoute") or {}).get("mapsUrl")
+    if not maps_url:
+        maps_url = resolved.get("mapsUrl")
+
+    if route_mode == "fallback" and not reason:
+        if dest_lat is not None and dest_lng is not None:
+            reason = "Indoor route unavailable. Destination pinned at venue level."
+        else:
+            reason = "Destination resolved, but map coordinates are unavailable."
 
     return {
-        "matchType": "geocoded",
-        "destination": geocoded,
-        "coordinates": {"lat": geocoded.get("lat"), "lng": geocoded.get("lng")},
+        "matchType": resolved.get("matchType", "unknown"),
+        "resolutionLevel": resolved.get("resolutionLevel", "venue"),
+        "routeMode": route_mode,
+        "reason": reason,
+        "destination": doc_to_dict(destination) if isinstance(destination, dict) else destination,
+        "coordinates": {"lat": dest_lat, "lng": dest_lng} if dest_lat is not None and dest_lng is not None else None,
         "route": route,
-        "mapsUrl": route["googleMapsRoute"]["mapsUrl"] if route else geocoded.get("mapsUrl"),
+        "mapsUrl": maps_url,
     }
 
 

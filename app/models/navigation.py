@@ -16,6 +16,12 @@ class NavStatus(str, Enum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
+
+class RouteMode(str, Enum):
+    INDOOR = "indoor"
+    OUTDOOR = "outdoor"
+    FALLBACK = "fallback"
+
 class Maneuver(str, Enum):
     STRAIGHT = "straight"
     LEFT = "left"
@@ -56,6 +62,8 @@ class NavigationSessionOut(BaseModel):
     originId: str
     destinationId: str
     destinationLabel: Optional[str] = None
+    routeMode: RouteMode = RouteMode.FALLBACK
+    fallbackReason: Optional[str] = None
     status: NavStatus = NavStatus.PENDING
     steps: List[RouteStepOut] = Field(default_factory=list)
     currentStepIndex: int = 0

@@ -29,7 +29,7 @@ async def start_nav(body: NavigationStart, user=Depends(get_current_user)):
 @router.post("/{nav_id}/next-step", response_model=APIResponse[NavigationSessionOut])
 async def next_step(nav_id: str, user=Depends(get_current_user)):
     try:
-        session = await advance_step(nav_id)
+        session = await advance_step(nav_id, user_id=str(user["_id"]))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -42,7 +42,7 @@ async def next_step(nav_id: str, user=Depends(get_current_user)):
 async def recheck(nav_id: str, image_url: str, user=Depends(get_current_user)):
     analysis = await analyze_image(image_url, context="recheck photo")
     try:
-        correction = await handle_recheck(nav_id, analysis)
+        correction = await handle_recheck(nav_id, analysis, user_id=str(user["_id"]))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -16,3 +16,5 @@ venv.bak/
 .mypy_cache/
 .pytest_cache/
 .coverage
+uvicorn.err.log
+uvicorn.out.log

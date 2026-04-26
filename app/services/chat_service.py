@@ -131,6 +131,9 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> T
     destination = result.get("destination") or {}
     coordinates = result.get("coordinates") or {}
     route = result.get("route") or {}
+    route_mode = result.get("routeMode") or "fallback"
+    resolution_level = result.get("resolutionLevel") or "venue"
+    fallback_reason = result.get("reason")
     route_meta = (route or {}).get("googleMapsRoute") or {}
     maps_url = result.get("mapsUrl") or route_meta.get("mapsUrl")
 
@@ -148,27 +151,51 @@ async def _build_mcp_location_runtime_context(user_text: str, user_id: str) -> T
     label = destination.get("label") or destination.get("formattedAddress") or destination.get("address") or user_text
     dest_id = destination.get("_id") or destination.get("id")
 
-    action_card = {
-        "cardType": "start_navigation" if route else "location_info",
-        "locationId": str(dest_id) if dest_id else None,
-        "label": label,
-        "ctaLabel": "Get Directions" if route else "Live Location"
-    }
+    if route_mode == "indoor" and dest_id:
+        action_card = {
+            "cardType": "start_navigation",
+            "locationId": str(dest_id),
+            "label": label,
+            "ctaLabel": "Start Indoor Navigation",
+        }
+    elif route_mode == "outdoor":
+        action_card = {
+            "cardType": "directions",
+            "locationId": str(dest_id) if dest_id else None,
+            "label": label,
+            "ctaLabel": "Open Route",
+        }
+    else:
+        action_card = {
+            "cardType": "location_info",
+            "locationId": str(dest_id) if dest_id else None,
+            "label": label,
+            "ctaLabel": "Open in Maps" if maps_url else "View Location",
+        }
 
     context_lines =[
         "Location resolved successfully via MCP tool route_to_location:",
         f"- label: {label}",
+        f"- resolutionLevel: {resolution_level}",
+        f"- routeMode: {route_mode}",
         f"- latitude: {lat}",
         f"- longitude: {lng}",
     ]
     if maps_url:
         context_lines.append(f"- mapsUrl: {maps_url}")
+    if fallback_reason:
+        context_lines.append(f"- fallbackReason: {fallback_reason}")
 
-    context_lines.append(
-        "IMPORTANT: The system has automatically generated a UI 'Action Card' with a button for this location. "
-        "Do not output raw JSON or coordinates. Just provide a brief, friendly conversational response "
-        "confirming you found the location."
-    )
+    if route_mode == "fallback":
+        context_lines.append(
+            "IMPORTANT: Indoor step-by-step navigation is unavailable for this destination. "
+            "Politely explain that the destination is pinned at venue/address level and ask whether the user wants outdoor route guidance."
+        )
+    else:
+        context_lines.append(
+            "IMPORTANT: The system has automatically generated a UI action card for this location. "
+            "Do not output raw JSON or coordinates. Keep your response brief and user-friendly."
+        )
     
     return "\n".join(context_lines), action_card
 
