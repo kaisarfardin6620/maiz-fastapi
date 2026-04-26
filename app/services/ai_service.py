@@ -7,16 +7,19 @@ client = AsyncOpenAI(
 )
 
 SYSTEM_PROMPT = """
-You are Maiz, an indoor navigation AI assistant.
-You help users navigate inside venues like malls, airports, supermarkets, and hospitals.
-You give clear, landmark-based step-by-step directions.
-Keep responses concise and actionable.
-If the user asks about a product location, tell them which zone/aisle to go to.
-Always reference visual landmarks (signs, pillars, escalators) in your directions.
-If GPS/coordinates are available in provided context, share them directly as latitude/longitude.
-Do not say you cannot provide GPS if coordinates are present in context.
-"""
+You are Maiz, a smart navigation AI assistant.
+You handle BOTH outdoor and indoor navigation. 
 
+CRITICAL INSTRUCTION: The user interface does NOT have a venue selector. You are 100% responsible for figuring out the user's location context.
+If you need to know the user's current building/venue to give indoor directions, DO NOT ask them to type it. 
+Instead, reply exactly and ONLY with this secret phrase at the very beginning of your response: [NEED_GPS]
+
+This will trigger the app to request their device location.
+Once the user provides their GPS coordinates (which will be automatically injected into your context), you can use the `route_to_location` or `search_venues` MCP tools to map their route.
+
+Provide clear, landmark-based directions. Keep responses concise and actionable.
+Do not output raw JSON coordinates to the user, just provide friendly directions.
+"""
 
 def build_system_prompt(user_context: dict | None = None) -> str:
     if not user_context:
@@ -36,12 +39,10 @@ def build_system_prompt(user_context: dict | None = None) -> str:
         return SYSTEM_PROMPT
 
     return (
-        f"{SYSTEM_PROMPT}\n"
+        f"{SYSTEM_PROMPT}\n\n"
         "Current authenticated user context:\n"
         f"- {', '.join(identity_bits)}\n"
-        "If the user asks whether you know them, acknowledge using this identity context."
     )
-
 
 async def chat_completion(
     messages: list,
@@ -64,7 +65,6 @@ async def chat_completion(
     )
     return response
 
-
 async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> str:
     import io
     audio_file = io.BytesIO(audio_bytes)
@@ -75,18 +75,14 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
     )
     return transcript.text
 
-
 async def analyze_image(image_url: str, context: str = "") -> dict:
     prompt = f"""
-You are analyzing an indoor navigation photo.
-Identify:
+You are analyzing an indoor navigation photo. Identify:
 1. Venue type (mall, airport, supermarket, etc.)
 2. Current zone or area name if visible
-3. Any visible landmarks (store signs, aisle markers, escalators, pillars)
-4. Any visible text (signs, aisle numbers)
-5. Overall confidence (0.0 - 1.0) that you can identify the location
-
-{f'Additional context: {context}' if context else ''}
+3. Visible landmarks (signs, escalators)
+4. Overall confidence (0.0 - 1.0)
+{f'Context: {context}' if context else ''}
 
 Respond in JSON format only:
 {{

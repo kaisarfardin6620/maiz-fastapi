@@ -6,8 +6,7 @@ import logging
 from app.database import connect_db, close_db
 from app.config import settings
 from app.mcp import router as mcp_router
-from app.routers import chat, navigation, venue, media, search_history
-
+from app.routers import chat, navigation, media, search_history
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +33,9 @@ app.add_middleware(
 
 app.include_router(chat.router)
 app.include_router(navigation.router)
-app.include_router(venue.router)
 app.include_router(media.router)
 app.include_router(search_history.router)
 app.include_router(mcp_router)
-
 
 @app.get("/health")
 async def health():

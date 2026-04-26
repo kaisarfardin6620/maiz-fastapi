@@ -13,6 +13,7 @@ class CardType(str, Enum):
     LOCATION_INFO = "location_info"
     PRODUCT_LOCATION = "product_location"
     RECHECK_REQUEST = "recheck_request"
+    REQUEST_LOCATION = "request_location"
 
 class Maneuver(str, Enum):
     STRAIGHT = "straight"
@@ -41,6 +42,10 @@ class MessageAttachment(BaseModel):
     url: Optional[str] = None
     purpose: Optional[str] = None
 
+class LocationPayload(BaseModel):
+    lat: float
+    lng: float
+
 class ChatMessageOut(BaseModel):
     id: str
     role: MessageRole
@@ -55,7 +60,7 @@ class WSIncoming(BaseModel):
     text: Optional[str] = None
     audio: Optional[str] = None
     imageUrl: Optional[str] = None
-    venueId: Optional[str] = None
+    location: Optional[LocationPayload] = None
 
 class WSOutgoing(BaseModel):
     role: MessageRole = MessageRole.ASSISTANT
