@@ -1,15 +1,16 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
 from app.core.dependencies import get_current_user
 from app.database import get_db
+from app.models.search_history import SearchHistoryGrouped
 from app.utils.object_id import docs_to_list, str_to_objectid
-from app.utils.response import success_response
+from app.utils.response import success_response, APIResponse
 
 router = APIRouter(prefix="/history", tags=["Search History"])
 
 
-@router.get("/")
+@router.get("/", response_model=APIResponse[SearchHistoryGrouped])
 async def get_search_history(user=Depends(get_current_user)):
     db = get_db()
     user_id = ObjectId(user["_id"])
@@ -26,7 +27,7 @@ async def get_search_history(user=Depends(get_current_user)):
     )
     all_items = await cursor.to_list(length=100)
 
-    today, last_week, last_month = [], [], []
+    today, last_week, last_month = [],[],[]
     for item in all_items:
         searched_at = item.get("searchedAt")
         if not searched_at:
@@ -34,7 +35,6 @@ async def get_search_history(user=Depends(get_current_user)):
         if searched_at.tzinfo is None:
             searched_at = searched_at.replace(tzinfo=timezone.utc)
 
-        item = {**item, "id": str(item.pop("_id"))}
         if searched_at >= today_start:
             today.append(item)
         elif searched_at >= week_start:
@@ -43,16 +43,14 @@ async def get_search_history(user=Depends(get_current_user)):
             last_month.append(item)
 
     return success_response({
-        "today": today,
-        "lastWeek": last_week,
-        "lastMonth": last_month,
+        "today": docs_to_list(today),
+        "lastWeek": docs_to_list(last_week),
+        "lastMonth": docs_to_list(last_month),
     })
 
 
 @router.delete("/{history_id}")
 async def delete_history_item(history_id: str, user=Depends(get_current_user)):
-    from fastapi import HTTPException
-
     db = get_db()
     try:
         history_obj_id = str_to_objectid(history_id)

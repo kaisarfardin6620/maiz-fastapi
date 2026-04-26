@@ -13,13 +13,51 @@ You give clear, landmark-based step-by-step directions.
 Keep responses concise and actionable.
 If the user asks about a product location, tell them which zone/aisle to go to.
 Always reference visual landmarks (signs, pillars, escalators) in your directions.
+If GPS/coordinates are available in provided context, share them directly as latitude/longitude.
+Do not say you cannot provide GPS if coordinates are present in context.
 """
 
 
-async def chat_completion(messages: list, stream: bool = True):
+def build_system_prompt(user_context: dict | None = None) -> str:
+    if not user_context:
+        return SYSTEM_PROMPT
+
+    identity_bits = []
+    if user_context.get("fullName"):
+        identity_bits.append(f"full name: {user_context['fullName']}")
+    elif user_context.get("firstName") or user_context.get("lastName"):
+        identity_bits.append(
+            f"name: {(user_context.get('firstName') or '').strip()} {(user_context.get('lastName') or '').strip()}".strip()
+        )
+    if user_context.get("email"):
+        identity_bits.append(f"email: {user_context['email']}")
+
+    if not identity_bits:
+        return SYSTEM_PROMPT
+
+    return (
+        f"{SYSTEM_PROMPT}\n"
+        "Current authenticated user context:\n"
+        f"- {', '.join(identity_bits)}\n"
+        "If the user asks whether you know them, acknowledge using this identity context."
+    )
+
+
+async def chat_completion(
+    messages: list,
+    stream: bool = True,
+    user_context: dict | None = None,
+    runtime_context: str | None = None,
+):
+    system_prompt = build_system_prompt(user_context)
+    composed_messages = [{"role": "system", "content": system_prompt}]
+    if runtime_context:
+        composed_messages.append({"role": "system", "content": runtime_context})
+    composed_messages.extend(messages)
+
     response = await client.chat.completions.create(
         model=settings.OPENAI_CHAT_MODEL,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        messages=composed_messages,
         stream=stream,
         max_tokens=500,
         temperature=0.4,

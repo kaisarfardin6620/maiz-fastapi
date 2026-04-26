@@ -32,7 +32,7 @@ async def start_navigation(user_id: str, origin_id: str, destination_id: str,
     origin_lat, origin_lng = origin_maps.get("lat"), origin_maps.get("lng")
     dest_lat, dest_lng = dest_maps.get("lat"), dest_maps.get("lng")
 
-    if all(v is not None for v in [origin_lat, origin_lng, dest_lat, dest_lng]):
+    if all(v is not None for v in[origin_lat, origin_lng, dest_lat, dest_lng]):
         try:
             route_data = await get_google_directions(
                 origin_lat=origin_lat,
@@ -45,35 +45,9 @@ async def start_navigation(user_id: str, origin_id: str, destination_id: str,
             route_data = None
 
     if not route_data:
-        prompt = f"""
-Generate indoor navigation steps from "{origin_label}" to "{dest_label}".
-Return JSON only:
-{{
-  "steps": [
-    {{
-      "stepIndex": 0,
-      "instructionText": "Walk straight past the main entrance",
-      "maneuver": "straight",
-      "landmarkName": "Main Entrance Sign",
-      "floor": 1,
-      "estimatedSteps": 20
-    }}
-  ],
-  "destinationLabel": "{dest_label}"
-}}
-"""
-        import json
+        raise ValueError(f"Indoor route mapping is not available between '{origin_label}' and '{dest_label}'.")
 
-        response = await chat_completion(
-            [{"role": "user", "content": prompt}], stream=False
-        )
-        raw = response.choices[0].message.content
-        try:
-            route_data = json.loads(raw)
-        except Exception:
-            route_data = {"steps": [], "destinationLabel": dest_label, "googleMapsRoute": None}
-
-    steps = route_data.get("steps", [])
+    steps = route_data.get("steps",[])
 
     result = await db["navigationsessions"].insert_one({
         "user": user_obj_id,

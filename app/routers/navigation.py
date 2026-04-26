@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.dependencies import get_current_user
-from app.models.navigation import NavigationStart
+from app.models.navigation import NavigationStart, NavigationSessionOut
 from app.services.navigation_service import start_navigation, advance_step, handle_recheck
 from app.services.ai_service import analyze_image
 from app.utils.object_id import doc_to_dict
-from app.utils.response import success_response
+from app.utils.response import success_response, APIResponse
 
 router = APIRouter(prefix="/navigation", tags=["Navigation"])
 
 
-@router.post("/start")
+@router.post("/start", response_model=APIResponse[NavigationSessionOut])
 async def start_nav(body: NavigationStart, user=Depends(get_current_user)):
     user_id = str(user["_id"])
     try:
@@ -26,7 +26,7 @@ async def start_nav(body: NavigationStart, user=Depends(get_current_user)):
     return success_response(doc_to_dict(session), "Navigation started")
 
 
-@router.post("/{nav_id}/next-step")
+@router.post("/{nav_id}/next-step", response_model=APIResponse[NavigationSessionOut])
 async def next_step(nav_id: str, user=Depends(get_current_user)):
     try:
         session = await advance_step(nav_id)

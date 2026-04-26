@@ -1,13 +1,15 @@
-from fastapi import APIRouter, Depends, Query
+from typing import List
+from fastapi import APIRouter, Depends, Query, HTTPException
 from app.core.dependencies import get_current_user
 from app.database import get_db
+from app.models.venue import VenueOut, VenueZoneOut
 from app.utils.object_id import doc_to_dict, docs_to_list, str_to_objectid
-from app.utils.response import success_response
+from app.utils.response import success_response, APIResponse
 
 router = APIRouter(prefix="/venue", tags=["Venue"])
 
 
-@router.get("/search")
+@router.get("/search", response_model=APIResponse[List[VenueOut]])
 async def search_venues(
     q: str = Query(..., min_length=1),
     city: str = Query(None),
@@ -17,7 +19,7 @@ async def search_venues(
     db = get_db()
     query = {"isDeleted": {"$ne": True}}
     if q:
-        query["$or"] = [
+        query["$or"] =[
             {"name": {"$regex": q, "$options": "i"}},
             {"address": {"$regex": q, "$options": "i"}},
         ]
@@ -31,10 +33,9 @@ async def search_venues(
     return success_response(docs_to_list(venues))
 
 
-@router.get("/{venue_id}")
+@router.get("/{venue_id}", response_model=APIResponse[VenueOut])
 async def get_venue(venue_id: str, user=Depends(get_current_user)):
     db = get_db()
-    from fastapi import HTTPException
 
     try:
         venue_obj_id = str_to_objectid(venue_id)
@@ -49,11 +50,13 @@ async def get_venue(venue_id: str, user=Depends(get_current_user)):
     return success_response(doc_to_dict(venue))
 
 
-@router.get("/{venue_id}/zones")
-async def get_venue_zones(venue_id: str, floor: int = Query(None),
-                           user=Depends(get_current_user)):
+@router.get("/{venue_id}/zones", response_model=APIResponse[List[VenueZoneOut]])
+async def get_venue_zones(
+    venue_id: str, 
+    floor: int = Query(None),
+    user=Depends(get_current_user)
+):
     db = get_db()
-    from fastapi import HTTPException
 
     try:
         venue_obj_id = str_to_objectid(venue_id)

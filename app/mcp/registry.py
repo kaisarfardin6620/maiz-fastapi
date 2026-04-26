@@ -158,17 +158,20 @@ async def _recheck_navigation(arguments: dict, context: dict) -> dict:
 
 async def _route_to_location(arguments: dict, context: dict) -> dict:
     await _require_user(context)
-    origin_id = arguments["originId"]
+    origin_id = arguments.get("originId")
     query = arguments["query"]
 
     db = get_db()
-    origin = await db["locations"].find_one({"_id": str_to_objectid(origin_id), "isDeleted": {"$ne": True}})
-    if not origin:
-        raise HTTPException(status_code=404, detail="Origin location not found")
+    origin_lat = None
+    origin_lng = None
+    if origin_id:
+        origin = await db["locations"].find_one({"_id": str_to_objectid(origin_id), "isDeleted": {"$ne": True}})
+        if not origin:
+            raise HTTPException(status_code=404, detail="Origin location not found")
 
-    origin_maps = (origin or {}).get("googleMaps") or {}
-    origin_lat = origin_maps.get("lat")
-    origin_lng = origin_maps.get("lng")
+        origin_maps = (origin or {}).get("googleMaps") or {}
+        origin_lat = origin_maps.get("lat")
+        origin_lng = origin_maps.get("lng")
 
     exact_location = await db["locations"].find_one(
         {
@@ -191,6 +194,7 @@ async def _route_to_location(arguments: dict, context: dict) -> dict:
         return {
             "matchType": "location",
             "destination": doc_to_dict(exact_location),
+            "coordinates": {"lat": dest_lat, "lng": dest_lng} if dest_lat is not None and dest_lng is not None else None,
             "route": route,
             "mapsUrl": route["googleMapsRoute"]["mapsUrl"] if route else None,
         }
@@ -212,6 +216,7 @@ async def _route_to_location(arguments: dict, context: dict) -> dict:
     return {
         "matchType": "geocoded",
         "destination": geocoded,
+        "coordinates": {"lat": geocoded.get("lat"), "lng": geocoded.get("lng")},
         "route": route,
         "mapsUrl": route["googleMapsRoute"]["mapsUrl"] if route else geocoded.get("mapsUrl"),
     }
@@ -321,7 +326,7 @@ registry.register(
             "originId": {"type": "string"},
             "query": {"type": "string", "minLength": 1},
         },
-        "required": ["originId", "query"],
+        "required": ["query"],
     },
     handler=_route_to_location,
 )
