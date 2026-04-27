@@ -1,3 +1,5 @@
+import io
+import json
 from openai import AsyncOpenAI
 from app.config import settings
 
@@ -25,7 +27,7 @@ def build_system_prompt(user_context: dict | None = None) -> str:
     if not user_context:
         return SYSTEM_PROMPT
 
-    identity_bits = []
+    identity_bits =[]
     if user_context.get("fullName"):
         identity_bits.append(f"full name: {user_context['fullName']}")
     elif user_context.get("firstName") or user_context.get("lastName"):
@@ -51,7 +53,7 @@ async def chat_completion(
     runtime_context: str | None = None,
 ):
     system_prompt = build_system_prompt(user_context)
-    composed_messages = [{"role": "system", "content": system_prompt}]
+    composed_messages =[{"role": "system", "content": system_prompt}]
     if runtime_context:
         composed_messages.append({"role": "system", "content": runtime_context})
     composed_messages.extend(messages)
@@ -66,7 +68,6 @@ async def chat_completion(
     return response
 
 async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> str:
-    import io
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = filename
     transcript = await client.audio.transcriptions.create(
@@ -99,7 +100,7 @@ Respond in JSON format only:
         messages=[
             {
                 "role": "user",
-                "content": [
+                "content":[
                     {"type": "image_url", "image_url": {"url": image_url}},
                     {"type": "text", "text": prompt},
                 ],
@@ -108,5 +109,4 @@ Respond in JSON format only:
         max_tokens=500,
         response_format={"type": "json_object"},
     )
-    import json
     return json.loads(response.choices[0].message.content)

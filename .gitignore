@@ -18,3 +18,4 @@ venv.bak/
 .coverage
 uvicorn.err.log
 uvicorn.out.log
+maiz_api_collection.json

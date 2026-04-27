@@ -1,4 +1,5 @@
 from bson import ObjectId
+from datetime import datetime
 
 
 def str_to_objectid(id: str) -> ObjectId:
@@ -21,6 +22,9 @@ def docs_to_list(docs: list) -> list:
 def _serialize_document(value):
     if isinstance(value, ObjectId):
         return str(value)
+
+    if isinstance(value, datetime):
+        return value.isoformat()
 
     if isinstance(value, dict):
         out = {}

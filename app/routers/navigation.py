@@ -17,7 +17,6 @@ async def start_nav(body: NavigationStart, user=Depends(get_current_user)):
             user_id=user_id,
             origin_id=body.originId,
             destination_id=body.destinationId,
-            venue_id=body.venueId,
             input_source=body.inputSource,
             voice_enabled=body.voiceGuidanceEnabled,
         )

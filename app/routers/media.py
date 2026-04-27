@@ -3,6 +3,7 @@ import base64
 import os
 import tempfile
 import cv2
+import boto3
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from datetime import datetime, timezone
@@ -12,15 +13,11 @@ from app.database import get_db
 from app.services.ai_service import analyze_image
 from app.utils.response import success_response, APIResponse
 from app.models.media import MediaUploadResponse
+from app.config import settings
 
 router = APIRouter(prefix="/media", tags=["Media"])
 
-
 def _extract_frame_sync(file_bytes: bytes, ext: str) -> str | None:
-    """
-    Synchronous CPU-bound function to extract a frame.
-    Runs in a separate thread so it doesn't freeze the FastAPI async event loop.
-    """
     tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
@@ -43,12 +40,24 @@ def _extract_frame_sync(file_bytes: bytes, ext: str) -> str | None:
             
     return None
 
+def _upload_to_s3(file_data: bytes, filename: str, mime_type: str, user_id: str):
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        region_name=settings.AWS_REGION
+    )
+    s3_client.put_object(
+        Bucket=settings.AWS_BUCKET_NAME,
+        Key=f"{user_id}/{filename}",
+        Body=file_data,
+        ContentType=mime_type
+    )
 
-@router.post("/upload", response_model=APIResponse[MediaUploadResponse])
+@router.post("/upload")
 async def upload_media(
     file: UploadFile = File(...),
-    purpose: str = Form(...),
-    venue_id: str = Form(None),
+    conversation_id: str = Form(None),
     user=Depends(get_current_user),
 ):
     db = get_db()
@@ -67,18 +76,26 @@ async def upload_media(
     else:
         raise HTTPException(status_code=400, detail="Unsupported file type")
 
-    file_url = f"https://your-storage.com/{user_id}/{safe_filename}"
     file_bytes = await file.read()
 
+    try:
+        await run_in_threadpool(_upload_to_s3, file_bytes, safe_filename, content_type, user_id)
+        file_url = f"https://{settings.AWS_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{user_id}/{safe_filename}"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload media to S3: {str(e)}")
+
     ai_analysis = None
+    user_text = ""
+    input_type = "photo"
 
     if media_type == "image":
         try:
             b64_data = base64.b64encode(file_bytes).decode('utf-8')
             base64_url = f"data:{content_type};base64,{b64_data}"
             
-            ai_analysis = await analyze_image(base64_url, context=purpose)
+            ai_analysis = await analyze_image(base64_url, context="")
             ai_analysis["analysedAt"] = datetime.now(timezone.utc)
+            user_text = f"[Photo analyzed: {ai_analysis.get('detectedZone', 'unknown zone')}]"
         except Exception:
             ai_analysis = None
 
@@ -88,28 +105,67 @@ async def upload_media(
         if b64_data:
             try:
                 base64_url = f"data:image/jpeg;base64,{b64_data}"
-                ai_analysis = await analyze_image(base64_url, context=purpose)
+                ai_analysis = await analyze_image(base64_url, context="")
                 ai_analysis["analysedAt"] = datetime.now(timezone.utc)
+                user_text = f"[Video frame analyzed: {ai_analysis.get('detectedZone', 'unknown zone')}]"
             except Exception:
                 ai_analysis = None
+                
+    elif media_type == "audio":
+        from app.services.chat_service import process_voice_message
+        input_type = "voice"
+        user_text = await process_voice_message(file_bytes)
 
     result = await db["mediaassets"].insert_one({
         "user": ObjectId(user_id),
         "mediaType": media_type,
-        "purpose": purpose,
         "url": file_url,
         "mimeType": content_type,
         "sizeBytes": file.size,
         "aiAnalysis": ai_analysis,
-        "linkedVenue": ObjectId(venue_id) if venue_id else None,
         "isDeleted": False,
         "createdAt": datetime.now(timezone.utc),
     })
+    
+    ai_response_text = None
+    
+    if conversation_id and user_text:
+        from app.services.chat_service import get_session_by_id, save_message, process_text_message
+        session = await get_session_by_id(user_id, conversation_id)
+        if session:
+            attachment_items = [{
+                "mediaType": media_type,
+                "url": file_url,
+                "purpose": "chat"
+            }]
+            await save_message(
+                session["_id"], 
+                "user", 
+                user_text,
+                voice_transcript=user_text if input_type == "voice" else None,
+                attachments=attachment_items
+            )
+            
+            stream, action_card = await process_text_message(session, user_text, user_id, venue_id=None)
+            
+            full_reply = ""
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                full_reply += delta
+                
+            if full_reply:
+                await save_message(
+                    session["_id"],
+                    "assistant",
+                    full_reply,
+                    action_card=action_card,
+                )
+                ai_response_text = full_reply
 
     return success_response({
         "assetId": str(result.inserted_id),
         "url": file_url,
         "mediaType": media_type,
-        "purpose": purpose,
         "aiAnalysis": ai_analysis,
-    }, "Upload successful")
+        "aiResponse": ai_response_text,
+    }, "Upload and analysis successful")

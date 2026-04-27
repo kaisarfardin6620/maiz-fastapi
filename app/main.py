@@ -3,9 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 
-from app.database import connect_db, close_db
+from app.database import get_mongo_client, db_instance
 from app.config import settings
-from app.mcp import router as mcp_router
+from app.redis_client import redis_client
+from app.mcp.router import router as mcp_router
 from app.routers import chat, navigation, media, search_history
 
 logger = logging.getLogger(__name__)
@@ -13,15 +14,26 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        await connect_db()
+        client = get_mongo_client()
+        await client.admin.command("ping")
+        db_instance.client = client
+        app.state.mongodb_client = client
         logger.info("MongoDB connection established")
+
+        await redis_client.ping()
+        logger.info("Redis connection established")
     except Exception:
-        logger.exception("Failed to connect to MongoDB")
+        logger.exception("Failed to connect to databases")
         raise
+        
     yield
-    await close_db()
+    
+    if db_instance.client:
+        db_instance.client.close()
+    await redis_client.aclose()
 
 app = FastAPI(title="Maiz AI", version="1.0.0", lifespan=lifespan)
+
 allow_all_origins = len(settings.CORS_ALLOW_ORIGINS) == 1 and settings.CORS_ALLOW_ORIGINS[0] == "*"
 app.add_middleware(
     CORSMiddleware,

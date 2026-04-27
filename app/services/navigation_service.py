@@ -1,15 +1,15 @@
 from datetime import datetime, timezone
 import heapq
 from math import hypot
+from bson import json_util
 from app.database import get_db
+from app.redis_client import redis_client
 from app.services.ai_service import chat_completion
 from app.services.maps_service import get_google_directions
 from app.utils.object_id import str_to_objectid
 
-
 def _now():
     return datetime.now(timezone.utc)
-
 
 def _normalize_navigation_session(session: dict | None) -> dict | None:
     if not session:
@@ -24,11 +24,9 @@ def _normalize_navigation_session(session: dict | None) -> dict | None:
         out["routeMode"] = "outdoor" if out.get("steps") else "fallback"
     return out
 
-
 def _get_coordinates(doc: dict | None):
     gm = (doc or {}).get("googleMaps") or {}
     return gm.get("lat"), gm.get("lng")
-
 
 def _get_indoor_xy(doc: dict | None):
     pos = (doc or {}).get("indoorPosition") or {}
@@ -38,19 +36,29 @@ def _get_indoor_xy(doc: dict | None):
         return None
     return float(x), float(y)
 
-
 async def _load_venue_graph(venue_obj_id):
     if not venue_obj_id:
         return None
+        
+    cache_key = f"venue_graph:{str(venue_obj_id)}"
+    cached_graph = await redis_client.get(cache_key)
+    
+    if cached_graph:
+        return json_util.loads(cached_graph)
+        
     db = get_db()
-    return await db["venuegraphs"].find_one({"venue": venue_obj_id, "isDeleted": {"$ne": True}})
-
+    graph = await db["venuegraphs"].find_one({"venue": venue_obj_id, "isDeleted": {"$ne": True}})
+    
+    if graph:
+        await redis_client.setex(cache_key, 86400, json_util.dumps(graph))
+        
+    return graph
 
 def _pick_nearest_graph_node(nodes: list[dict], floor: int | None, point: tuple[float, float] | None):
     if not nodes or point is None:
         return None
 
-    filtered = [n for n in nodes if floor is None or n.get("floor") == floor]
+    filtered =[n for n in nodes if floor is None or n.get("floor") == floor]
     if not filtered:
         filtered = nodes
 
@@ -67,10 +75,9 @@ def _pick_nearest_graph_node(nodes: list[dict], floor: int | None, point: tuple[
             best = node
     return best
 
-
 def _build_indoor_route(graph: dict, origin: dict, destination: dict) -> dict | None:
-    nodes = graph.get("nodes") or []
-    edges = graph.get("edges") or []
+    nodes = graph.get("nodes") or[]
+    edges = graph.get("edges") or[]
     if not nodes or not edges:
         return None
 
@@ -100,11 +107,11 @@ def _build_indoor_route(graph: dict, origin: dict, destination: dict) -> dict | 
         if not src or not dst:
             continue
         weight = float(edge.get("weight") or edge.get("distance") or 1.0)
-        adjacency.setdefault(src, []).append((dst, weight, edge))
+        adjacency.setdefault(src,[]).append((dst, weight, edge))
         if edge.get("bidirectional", True):
             adjacency.setdefault(dst, []).append((src, weight, edge))
 
-    queue = [(0.0, origin_id)]
+    queue =[(0.0, origin_id)]
     dist = {origin_id: 0.0}
     prev: dict[str, tuple[str, dict]] = {}
 
@@ -114,7 +121,7 @@ def _build_indoor_route(graph: dict, origin: dict, destination: dict) -> dict | 
             break
         if current_dist > dist.get(current, float("inf")):
             continue
-        for nxt, weight, edge in adjacency.get(current, []):
+        for nxt, weight, edge in adjacency.get(current,[]):
             candidate = current_dist + weight
             if candidate < dist.get(nxt, float("inf")):
                 dist[nxt] = candidate
@@ -124,8 +131,8 @@ def _build_indoor_route(graph: dict, origin: dict, destination: dict) -> dict | 
     if destination_id not in dist:
         return None
 
-    path_nodes = [destination_id]
-    path_edges = []
+    path_nodes =[destination_id]
+    path_edges =[]
     cursor = destination_id
     while cursor != origin_id:
         parent, edge = prev[cursor]
@@ -135,7 +142,7 @@ def _build_indoor_route(graph: dict, origin: dict, destination: dict) -> dict | 
     path_nodes.reverse()
     path_edges.reverse()
 
-    steps = []
+    steps =[]
     for idx, (_, to_node_id, edge) in enumerate(path_edges):
         node = node_by_id.get(to_node_id) or {}
         instruction = edge.get("instruction") or f"Proceed to {node.get('label') or 'next waypoint'}."
@@ -155,16 +162,14 @@ def _build_indoor_route(graph: dict, origin: dict, destination: dict) -> dict | 
         "destinationLabel": destination.get("label") or destination.get("address") or "destination",
     }
 
-
 async def start_navigation(user_id: str, origin_id: str, destination_id: str,
-                            venue_id: str = None, input_source: str = "text",
+                            input_source: str = "text",
                             voice_enabled: bool = True) -> dict:
     db = get_db()
 
     user_obj_id = str_to_objectid(user_id)
     origin_obj_id = str_to_objectid(origin_id)
     destination_obj_id = str_to_objectid(destination_id)
-    venue_obj_id = str_to_objectid(venue_id) if venue_id else None
 
     origin = await db["locations"].find_one({"_id": origin_obj_id, "isDeleted": {"$ne": True}})
     destination = await db["locations"].find_one({"_id": destination_obj_id, "isDeleted": {"$ne": True}})
@@ -185,20 +190,22 @@ async def start_navigation(user_id: str, origin_id: str, destination_id: str,
     dest_lat, dest_lng = _get_coordinates(destination)
 
     shared_venue = (origin or {}).get("venue") and (origin or {}).get("venue") == (destination or {}).get("venue")
-    indoor_graph = await _load_venue_graph((origin or {}).get("venue") if shared_venue else None)
+    venue_obj_id = (origin or {}).get("venue") if shared_venue else None
+    
+    indoor_graph = await _load_venue_graph(venue_obj_id)
     indoor_route = None
     if indoor_graph and _get_indoor_xy(origin) and _get_indoor_xy(destination):
         indoor_route = _build_indoor_route(indoor_graph, origin, destination)
 
     if indoor_route and indoor_route.get("steps"):
         route_data = {
-            "steps": indoor_route.get("steps") or [],
+            "steps": indoor_route.get("steps") or[],
             "googleMapsRoute": None,
             "destinationLabel": indoor_route.get("destinationLabel", dest_label),
         }
         route_mode = "indoor"
 
-    if not route_data and all(v is not None for v in [origin_lat, origin_lng, dest_lat, dest_lng]):
+    if not route_data and all(v is not None for v in[origin_lat, origin_lng, dest_lat, dest_lng]):
         try:
             route_data = await get_google_directions(
                 origin_lat=origin_lat,
@@ -218,7 +225,7 @@ async def start_navigation(user_id: str, origin_id: str, destination_id: str,
             "Pinned destination at venue level."
         )
         route_data = {
-            "steps": [],
+            "steps":[],
             "googleMapsRoute": {
                 "mapsUrl": (
                     f"https://www.google.com/maps/search/?api=1&query={dest_lat},{dest_lng}"
@@ -229,7 +236,7 @@ async def start_navigation(user_id: str, origin_id: str, destination_id: str,
             "destinationLabel": dest_label,
         }
 
-    steps = route_data.get("steps", [])
+    steps = route_data.get("steps",[])
     status = "active" if steps else "pending"
 
     result = await db["navigationsessions"].insert_one({
@@ -264,7 +271,6 @@ async def start_navigation(user_id: str, origin_id: str, destination_id: str,
     session = await db["navigationsessions"].find_one({"_id": result.inserted_id})
     return _normalize_navigation_session(session)
 
-
 async def advance_step(nav_session_id: str, user_id: str | None = None) -> dict:
     db = get_db()
     nav_obj_id = str_to_objectid(nav_session_id)
@@ -295,7 +301,6 @@ async def advance_step(nav_session_id: str, user_id: str | None = None) -> dict:
     )
     updated = await db["navigationsessions"].find_one({"_id": nav_obj_id})
     return _normalize_navigation_session(updated)
-
 
 async def handle_recheck(nav_session_id: str, image_analysis: dict, user_id: str | None = None) -> str:
     db = get_db()

@@ -11,6 +11,8 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   mongo:
@@ -24,6 +26,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: maiz-redis
+    ports:
+      - "6379:6379"
     restart: unless-stopped
 
 volumes:

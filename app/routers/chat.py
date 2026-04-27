@@ -1,12 +1,14 @@
 import json
 import base64
+import logging
 from typing import List
 from bson import ObjectId
 from pydantic import BaseModel
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, HTTPException, File, UploadFile, Form
 from app.core.auth import verify_token
 from app.core.dependencies import get_current_user
 from app.database import get_db
+from app.redis_client import redis_client
 from app.utils.object_id import doc_to_dict, docs_to_list
 from app.utils.response import success_response, APIResponse
 from app.models.chat import ChatSessionOut
@@ -17,6 +19,7 @@ from app.services.chat_service import (
     process_voice_message, process_image_message,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
 class RenameConversationBody(BaseModel):
@@ -37,10 +40,39 @@ async def get_conversation(conversation_id: str, user=Depends(get_current_user))
         raise HTTPException(status_code=404, detail="Conversation not found")
     return success_response(doc_to_dict(session))
 
-@router.post("/conversations", response_model=APIResponse[ChatSessionOut])
-async def create_conversation(user=Depends(get_current_user)):
+@router.get("/conversations/{conversation_id}/messages", response_model=APIResponse[list])
+async def get_paginated_messages(
+    conversation_id: str, 
+    skip: int = Query(0, ge=0), 
+    limit: int = Query(50, ge=1, le=100),
+    user=Depends(get_current_user)
+):
+    db = get_db()
+    session_obj_id = ObjectId(conversation_id)
+    session = await db["chatsessions"].find_one(
+        {"_id": session_obj_id, "user": ObjectId(user["_id"])},
+        {"messages": {"$slice":[skip, limit]}}
+    )
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+        
+    return success_response(docs_to_list(session.get("messages",[])))
+
+@router.post("/conversations")
+async def create_conversation(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user)
+):
+    from app.routers.media import upload_media
     session = await create_session(str(user["_id"]), venue_id=None)
-    return success_response(doc_to_dict(session), "Conversation created")
+    
+    upload_result = await upload_media(file=file, conversation_id=str(session["_id"]), user=user)
+    
+    return success_response({
+        "conversation": doc_to_dict(session),
+        "mediaResult": upload_result.get("data")
+    }, "Conversation created and media processed")
 
 @router.patch("/conversations/{conversation_id}/title", response_model=APIResponse[ChatSessionOut])
 async def rename_conversation(
@@ -65,7 +97,10 @@ async def chat_websocket(
     websocket: WebSocket,
     token: str = Query(...),
     conversation_id: str = Query(None),
+    conversationId: str = Query(None),
 ):
+    actual_conversation_id = conversationId or conversation_id
+
     try:
         payload = verify_token(token)
         user_id = payload.get("id") or payload.get("_id") or payload.get("sub")
@@ -87,20 +122,46 @@ async def chat_websocket(
 
     try:
         session = None
-        if conversation_id:
-            session = await get_session_by_id(user_id, conversation_id)
+        if actual_conversation_id:
+            session = await get_session_by_id(user_id, actual_conversation_id)
             if not session:
                 await websocket.send_text(json.dumps({
                     "type": "error",
-                    "conversationId": conversation_id,
+                    "conversationId": actual_conversation_id,
                     "message": "Conversation not found",
                 }))
                 await websocket.close(code=1008)
                 return
 
+            await websocket.send_text(json.dumps({
+                "type": "conversation_history",
+                "conversationId": actual_conversation_id,
+                "title": session.get("title", "New Chat"),
+                "messages": docs_to_list(session.get("messages", [])),
+            }))
+
         while True:
             try:
                 raw = await websocket.receive_text()
+                
+                try:
+                    verify_token(token)
+                except Exception:
+                    await websocket.send_text(json.dumps({"type": "error", "message": "Session expired"}))
+                    await websocket.close(code=1008, reason="Token Expired")
+                    return
+
+                rate_limit_key = f"ws_rate_limit:{user_id}"
+                requests_count = await redis_client.incr(rate_limit_key)
+                if requests_count == 1:
+                    await redis_client.expire(rate_limit_key, 60)
+                if requests_count > 20:
+                    await websocket.send_text(json.dumps({
+                        "type": "error", 
+                        "message": "Rate limit exceeded. Please slow down."
+                    }))
+                    continue
+
                 data = json.loads(raw)
                 requested_conversation_id = data.get("conversationId")
                 start_new = bool(data.get("startNewConversation"))
@@ -129,7 +190,7 @@ async def chat_websocket(
 
                 input_type = "text"
                 user_text = None
-                attachment_items = []
+                attachment_items =[]
                 
                 user_gps = data.get("location")
 
@@ -173,7 +234,7 @@ async def chat_websocket(
                     else:
                         text_to_process = f"[System Alert: User shared their GPS Location lat:{lat}, lng:{lng}. Find their nearest venue.]"
 
-                was_first_message = len(session.get("messages", [])) == 0
+                was_first_message = len(session.get("messages",[])) == 0
                 await save_message(session_id, "user", user_text or "Shared Location",
                                    voice_transcript=user_text if input_type == "voice" else None,
                                    attachments=attachment_items)
@@ -219,14 +280,15 @@ async def chat_websocket(
                                     "isDone": False,
                                 }))
                                 break
-                            elif len(buffer) > 15 or not buffer.startswith("["):
-                                flushed = True
+                            elif len(buffer) > 15:
                                 await websocket.send_text(json.dumps({
                                     "type": "stream",
                                     "conversationId": session_id_str,
                                     "text": buffer,
                                     "isDone": False,
                                 }))
+                                buffer = ""
+                                flushed = True
                         else:
                             await websocket.send_text(json.dumps({
                                 "type": "stream",
@@ -235,30 +297,38 @@ async def chat_websocket(
                                 "isDone": False,
                             }))
 
-                if action_card and action_card.get("cardType") == "request_location":
-                    await websocket.send_text(json.dumps({
-                        "type": "action_card",
-                        "conversationId": session_id_str,
-                        "actionCard": action_card,
-                    }))
+                if full_reply:
+                    await save_message(
+                        session_id,
+                        "assistant",
+                        full_reply,
+                        action_card=action_card,
+                    )
 
-                await websocket.send_text(json.dumps({
+                response_obj = {
                     "type": "stream",
                     "conversationId": session_id_str,
                     "text": "",
                     "isDone": True,
-                }))
-
-                await save_message(session_id, "assistant", full_reply, action_card=action_card)
-
-                latest = await get_session_by_id(user_id, session_id_str)
-                if latest:
-                    session = latest
-
+                }
+                if action_card:
+                    response_obj["actionCard"] = action_card
+                
+                await websocket.send_text(json.dumps(response_obj))
             except WebSocketDisconnect:
+                logger.info("Chat websocket disconnected")
                 break
-            except Exception as e:
-                await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
-
-    except Exception as e:
-        await websocket.close(code=1011, reason="Internal Server Error")
+            except Exception:
+                logger.exception("Error while processing chat websocket message")
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": "Unexpected websocket error",
+                    }))
+                except Exception:
+                    pass
+                break
+    except WebSocketDisconnect:
+        logger.info("Chat websocket disconnected")
+    except Exception:
+        logger.exception("Unhandled chat websocket error")

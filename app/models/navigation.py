@@ -78,6 +78,5 @@ class NavigationSessionOut(BaseModel):
 class NavigationStart(BaseModel):
     originId: str
     destinationId: str
-    inputSource: InputSource = InputSource.TEXT
-    venueId: Optional[str] = None
+    inputSource: str = "text"
     voiceGuidanceEnabled: bool = True

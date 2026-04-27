@@ -321,7 +321,7 @@ async def delete_session(user_id: str, conversation_id: str) -> bool:
 
 async def get_session_messages(session: dict) -> list:
     formatted =[]
-    for msg in session.get("messages", [])[-20:]:
+    for msg in session.get("messages", [])[-50:]:
         formatted.append({"role": msg["role"], "content": msg.get("text", "")})
     return formatted
 
