@@ -7,7 +7,7 @@ from app.database import get_mongo_client, db_instance
 from app.config import settings
 from app.redis_client import redis_client
 from app.mcp.router import router as mcp_router
-from app.routers import chat, navigation, media, search_history
+from app.routers import chat, navigation, media
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(navigation.router)
 app.include_router(media.router)
-app.include_router(search_history.router)
+
 app.include_router(mcp_router)
 
 @app.get("/health")

@@ -15,7 +15,7 @@ from app.models.chat import ChatSessionOut
 from app.services.chat_service import (
     get_or_create_session, get_session_by_id, create_session, list_sessions,
     update_session_title, delete_session, auto_title_session_if_needed,
-    save_message, save_search_history, process_text_message,
+    save_message, process_text_message,
     process_voice_message, process_image_message,
 )
 
@@ -28,36 +28,11 @@ class RenameConversationBody(BaseModel):
 @router.get("/conversations", response_model=APIResponse[List[ChatSessionOut]])
 async def get_conversations(
     limit: int = Query(50, ge=1, le=200),
+    filter: str = Query(None, description="Filter by time: today, lastWeek, lastMonth"),
     user=Depends(get_current_user),
 ):
-    sessions = await list_sessions(str(user["_id"]), venue_id=None, limit=limit)
+    sessions = await list_sessions(str(user["_id"]), venue_id=None, limit=limit, filter=filter)
     return success_response(docs_to_list(sessions))
-
-@router.get("/conversations/{conversation_id}", response_model=APIResponse[ChatSessionOut])
-async def get_conversation(conversation_id: str, user=Depends(get_current_user)):
-    session = await get_session_by_id(str(user["_id"]), conversation_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return success_response(doc_to_dict(session))
-
-@router.get("/conversations/{conversation_id}/messages", response_model=APIResponse[list])
-async def get_paginated_messages(
-    conversation_id: str, 
-    skip: int = Query(0, ge=0), 
-    limit: int = Query(50, ge=1, le=100),
-    user=Depends(get_current_user)
-):
-    db = get_db()
-    session_obj_id = ObjectId(conversation_id)
-    session = await db["chatsessions"].find_one(
-        {"_id": session_obj_id, "user": ObjectId(user["_id"])},
-        {"messages": {"$slice":[skip, limit]}}
-    )
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-        
-    return success_response(docs_to_list(session.get("messages",[])))
 
 @router.post("/conversations")
 async def create_conversation(
@@ -247,7 +222,6 @@ async def chat_websocket(
                         "title": session.get("title", "New Chat"),
                     }))
 
-                await save_search_history(user_id, user_text or "Location Search", input_type, venue_id=None)
 
                 stream, action_card = await process_text_message(session, text_to_process, user_id, venue_id=None)
                 

@@ -251,7 +251,7 @@ async def get_or_create_session(
     return session
 
 
-async def list_sessions(user_id: str, venue_id: str = None, limit: int = 50) -> list[dict]:
+async def list_sessions(user_id: str, venue_id: str = None, limit: int = 50, filter: str = None) -> list[dict]:
     db = get_db()
     query = {
         "user": ObjectId(user_id),
@@ -261,6 +261,22 @@ async def list_sessions(user_id: str, venue_id: str = None, limit: int = 50) -> 
         venue_obj_id = _safe_object_id(venue_id)
         if venue_obj_id:
             query["venue"] = venue_obj_id
+
+    if filter:
+        now = _now()
+        if filter == "today":
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            query["updatedAt"] = {"$gte": day_start}
+        elif filter == "lastWeek":
+            from datetime import timedelta
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            week_start = now - timedelta(days=7)
+            query["updatedAt"] = {"$lt": day_start, "$gte": week_start}
+        elif filter == "lastMonth":
+            from datetime import timedelta
+            week_start = now - timedelta(days=7)
+            month_start = now - timedelta(days=30)
+            query["updatedAt"] = {"$lt": week_start, "$gte": month_start}
 
     docs = await db["chatsessions"].find(query).sort("updatedAt", -1).limit(max(1, min(limit, 200))).to_list(length=limit)
     return docs
@@ -331,7 +347,6 @@ async def save_message(session_id: ObjectId, role: str, text: str,
                        action_card: dict = None):
     db = get_db()
     message = {
-        "_id": ObjectId(),
         "role": role,
         "text": text,
         "attachments": attachments or[],
@@ -346,18 +361,6 @@ async def save_message(session_id: ObjectId, role: str, text: str,
     return message
 
 
-async def save_search_history(user_id: str, query: str, input_type: str,
-                               venue_id: str = None, resolved_address: str = None):
-    db = get_db()
-    await db["searchhistories"].insert_one({
-        "user": ObjectId(user_id),
-        "venue": ObjectId(venue_id) if venue_id else None,
-        "query": query,
-        "resolvedAddress": resolved_address,
-        "inputType": input_type,
-        "searchedAt": _now(),
-        "isDeleted": False,
-    })
 
 
 async def process_text_message(session: dict, text: str, user_id: str,

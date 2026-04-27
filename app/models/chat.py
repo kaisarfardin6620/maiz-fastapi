@@ -47,7 +47,6 @@ class LocationPayload(BaseModel):
     lng: float
 
 class ChatMessageOut(BaseModel):
-    id: str
     role: MessageRole
     text: Optional[str] = None
     attachments: List[MessageAttachment] = Field(default_factory=list)
