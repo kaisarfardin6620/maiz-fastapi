@@ -13,7 +13,7 @@ from app.utils.object_id import doc_to_dict, docs_to_list
 from app.utils.response import success_response, APIResponse
 from app.models.chat import ChatSessionOut
 from app.services.chat_service import (
-    get_or_create_session, get_session_by_id, create_session, list_sessions,
+    get_session_by_id, create_session, list_sessions,
     update_session_title, delete_session, auto_title_session_if_needed,
     save_message, process_text_message,
     process_voice_message, process_image_message,

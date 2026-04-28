@@ -1,15 +1,18 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
 
-from app.database import get_mongo_client, db_instance
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
 from app.config import settings
-from app.redis_client import redis_client
+from app.database import db_instance, get_mongo_client
 from app.mcp.router import router as mcp_router
-from app.routers import chat, navigation, media
+from app.redis_client import redis_client
+from app.routers import chat, media, navigation
 
 logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,16 +28,27 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to connect to databases")
         raise
-        
+
     yield
-    
+
     if db_instance.client:
         db_instance.client.close()
     await redis_client.aclose()
 
+
 app = FastAPI(title="Maiz AI", version="1.0.0", lifespan=lifespan)
 
-allow_all_origins = len(settings.CORS_ALLOW_ORIGINS) == 1 and settings.CORS_ALLOW_ORIGINS[0] == "*"
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception on %s %s", request.method, request.url)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "message": "An unexpected error occurred."},
+    )
+
+
+allow_all_origins = "*" in settings.CORS_ALLOW_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ALLOW_ORIGINS,
@@ -46,8 +60,8 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(navigation.router)
 app.include_router(media.router)
-
 app.include_router(mcp_router)
+
 
 @app.get("/health")
 async def health():

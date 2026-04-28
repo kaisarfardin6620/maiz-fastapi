@@ -16,7 +16,7 @@ def doc_to_dict(doc: dict) -> dict:
 
 
 def docs_to_list(docs: list) -> list:
-    return [doc_to_dict(doc) for doc in docs]
+    return [doc_to_dict(doc) for doc in docs if doc is not None]
 
 
 def _serialize_document(value):

@@ -17,42 +17,47 @@ from app.config import settings
 
 router = APIRouter(prefix="/media", tags=["Media"])
 
+# Module-level singleton — created once at startup, reused across all requests
+_s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    region_name=settings.AWS_REGION,
+)
+
+
 def _extract_frame_sync(file_bytes: bytes, ext: str) -> str | None:
     tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
-        
+
         cap = cv2.VideoCapture(tmp_path)
         success, frame = cap.read()
         cap.release()
-        
+
         if success:
             _, buffer = cv2.imencode('.jpg', frame)
             return base64.b64encode(buffer.tobytes()).decode('utf-8')
-            
+
     except Exception:
         return None
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
-            
+
     return None
 
+
 def _upload_to_s3(file_data: bytes, filename: str, mime_type: str, user_id: str):
-    s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-        region_name=settings.AWS_REGION
-    )
-    s3_client.put_object(
+    _s3_client.put_object(
         Bucket=settings.AWS_BUCKET_NAME,
         Key=f"{user_id}/{filename}",
         Body=file_data,
-        ContentType=mime_type
+        ContentType=mime_type,
     )
+
 
 @router.post("/upload")
 async def upload_media(
@@ -92,7 +97,6 @@ async def upload_media(
         try:
             b64_data = base64.b64encode(file_bytes).decode('utf-8')
             base64_url = f"data:{content_type};base64,{b64_data}"
-            
             ai_analysis = await analyze_image(base64_url, context="")
             ai_analysis["analysedAt"] = datetime.now(timezone.utc)
             user_text = f"[Photo analyzed: {ai_analysis.get('detectedZone', 'unknown zone')}]"
@@ -101,7 +105,6 @@ async def upload_media(
 
     elif media_type == "video":
         b64_data = await run_in_threadpool(_extract_frame_sync, file_bytes, ext)
-        
         if b64_data:
             try:
                 base64_url = f"data:image/jpeg;base64,{b64_data}"
@@ -110,7 +113,7 @@ async def upload_media(
                 user_text = f"[Video frame analyzed: {ai_analysis.get('detectedZone', 'unknown zone')}]"
             except Exception:
                 ai_analysis = None
-                
+
     elif media_type == "audio":
         from app.services.chat_service import process_voice_message
         input_type = "voice"
@@ -126,9 +129,9 @@ async def upload_media(
         "isDeleted": False,
         "createdAt": datetime.now(timezone.utc),
     })
-    
+
     ai_response_text = None
-    
+
     if conversation_id and user_text:
         from app.services.chat_service import get_session_by_id, save_message, process_text_message
         session = await get_session_by_id(user_id, conversation_id)
@@ -136,23 +139,23 @@ async def upload_media(
             attachment_items = [{
                 "mediaType": media_type,
                 "url": file_url,
-                "purpose": "chat"
+                "purpose": "chat",
             }]
             await save_message(
-                session["_id"], 
-                "user", 
+                session["_id"],
+                "user",
                 user_text,
                 voice_transcript=user_text if input_type == "voice" else None,
-                attachments=attachment_items
+                attachments=attachment_items,
             )
-            
+
             stream, action_card = await process_text_message(session, user_text, user_id, venue_id=None)
-            
+
             full_reply = ""
             async for chunk in stream:
                 delta = chunk.choices[0].delta.content or ""
                 full_reply += delta
-                
+
             if full_reply:
                 await save_message(
                     session["_id"],
