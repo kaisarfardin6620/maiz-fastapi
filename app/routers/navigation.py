@@ -39,7 +39,17 @@ async def next_step(nav_id: str, user=Depends(get_current_user)):
 
 @router.post("/{nav_id}/recheck")
 async def recheck(nav_id: str, image_url: str, user=Depends(get_current_user)):
-    analysis = await analyze_image(image_url, context="recheck photo")
+    try:
+        analysis = await analyze_image(image_url, context="recheck photo")
+    except Exception:
+        analysis = {
+            "detectedVenueType": None,
+            "detectedZone": None,
+            "detectedLandmarks": [],
+            "detectedText": None,
+            "detectedLocation": None,
+            "overallConfidence": 0.0,
+        }
     try:
         correction = await handle_recheck(nav_id, analysis, user_id=str(user["_id"]))
     except ValueError as e:

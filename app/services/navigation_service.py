@@ -336,7 +336,12 @@ async def handle_recheck(nav_session_id: str, image_analysis: dict, user_id: str
         return "Session not found"
 
     steps = session.get("steps", [])
-    current_step = steps[session.get("currentStepIndex", 0)] if steps else {}
+    if steps:
+        current_step_index = session.get("currentStepIndex", 0)
+        current_step_index = max(0, min(current_step_index, len(steps) - 1))
+        current_step = steps[current_step_index]
+    else:
+        current_step = {}
 
     prompt = f"""
 The user is lost during indoor navigation.
